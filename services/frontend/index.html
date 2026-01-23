@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Feature Store Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --error: #ef4444;
+            --success: #22c55e;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 2rem;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+        }
+
+        h1 {
+            text-align: center;
+            font-weight: 800;
+            font-size: 2.5rem;
+            margin-bottom: 2rem;
+            background: linear-gradient(to right, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .search-box {
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        input {
+            flex: 1;
+            background: #334155;
+            border: 1px solid #475569;
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            border-color: var(--accent);
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: var(--accent-hover);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .result-card {
+            background: var(--card-bg);
+            border-radius: 1rem;
+            padding: 2rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+        }
+
+        .result-card.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .metric {
+            background: #334155;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            text-align: center;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: white;
+        }
+
+        .metric-value.highlight {
+            color: var(--success);
+        }
+
+        .last-updated {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+
+        .error {
+            color: var(--error);
+            background: rgba(239, 68, 68, 0.1);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            text-align: center;
+            margin-top: 1rem;
+            display: none;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .status-live {
+            background: rgba(34, 197, 94, 0.2);
+            color: #4ade80;
+        }
+
+        .user-list {
+            margin-top: 2rem;
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 1rem;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        .user-list h3 {
+            margin: 0 0 1rem 0;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .user-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .chip {
+            background: #334155;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .chip:hover {
+            background: var(--accent);
+            color: white;
+        }
+    </style>
+</head>
+
+<body onload="fetchRecentUsers()">
+
+    <div class="container">
+        <h1>Real-Time Feature Store</h1>
+
+        <div class="search-box">
+            <input type="text" id="userIdInput" placeholder="Enter User ID or click one below...">
+            <button id="fetchBtn" onclick="toggleAutoFetch()">Start Live View</button>
+        </div>
+
+        <div class="user-list">
+            <h3>Recent Active Users</h3>
+            <div class="user-chips" id="userList">
+                <div style="color: var(--text-secondary); font-style: italic;">Loading...</div>
+            </div>
+            <div style="text-align: right; margin-top: 0.5rem;">
+                <button onclick="fetchRecentUsers()"
+                    style="background: transparent; padding: 0; color: var(--accent); font-size: 0.875rem;">Main List
+                    Refresh ↻</button>
+            </div>
+        </div>
+
+        <div class="error" id="errorMsg"></div>
+
+        <div class="result-card" id="resultCard">
+            <div style="text-align: center;">
+                <span class="status-badge status-live">● LIVE UPDATE</span>
+            </div>
+
+            <div class="grid">
+                <div class="metric">
+                    <div class="metric-label">Window Sum (10s)</div>
+                    <div class="metric-value highlight" id="featureA">0.00</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Global Count</div>
+                    <div class="metric-value" id="featureB">0</div>
+                </div>
+            </div>
+
+            <div class="metric">
+                <div class="metric-label">User ID</div>
+                <div style="font-family: monospace; color: var(--text-secondary);" id="displayUserId">-</div>
+            </div>
+
+            <div class="last-updated">
+                Last Updated: <span id="timestamp">-</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let fetchInterval = null;
+        let isRunning = false;
+
+        async function fetchRecentUsers() {
+            const listEl = document.getElementById('userList');
+            try {
+                const response = await fetch(`${API_URL}/users`);
+                if (!response.ok) throw new Error("Failed to load users");
+                const users = await response.json();
+
+                listEl.innerHTML = '';
+                if (users.length === 0) {
+                    listEl.innerHTML = '<div style="color: var(--text-secondary);">No active users found yet.</div>';
+                    return;
+                }
+
+                users.forEach(uid => {
+                    const chip = document.createElement('div');
+                    chip.className = 'chip';
+                    chip.textContent = uid.substring(0, 8) + '...';
+                    chip.title = uid;
+                    chip.onclick = () => selectUser(uid);
+                    listEl.appendChild(chip);
+                });
+            } catch (err) {
+                listEl.innerHTML = '<div style="color: var(--error);">Error loading users.</div>';
+            }
+        }
+
+        function selectUser(uid) {
+            document.getElementById('userIdInput').value = uid;
+            if (!isRunning) {
+                toggleAutoFetch();
+            } else {
+                // If running, just restart fetch with new ID logic implied by data binding, 
+                // but simpler to just let the loop pick it up or restart.
+                // Improving UX: Restart explicitly to clear old data immediately.
+                clearInterval(fetchInterval);
+                fetchData();
+                fetchInterval = setInterval(fetchData, 1000);
+            }
+        }
+
+        async function fetchData() {
+            const userId = document.getElementById('userIdInput').value.trim();
+            const errorEl = document.getElementById('errorMsg');
+            const cardEl = document.getElementById('resultCard');
+
+            if (!userId) {
+                // if empty, wait
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/features/${userId}`);
+
+                if (!response.ok) {
+                    if (response.status === 404) throw new Error('User not found (yet)');
+                    throw new Error('Failed to fetch data');
+                }
+
+                const data = await response.json();
+                updateUI(data);
+                errorEl.style.display = 'none';
+                cardEl.classList.add('visible');
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        function updateUI(data) {
+            // Feature A is a dictionary like {"sum_10s": 123.4}
+            const sumVal = data.feature_a ? (data.feature_a.sum_10s || 0).toFixed(2) : "0.00";
+
+            document.getElementById('featureA').textContent = sumVal;
+            document.getElementById('featureB').textContent = data.feature_b;
+            document.getElementById('displayUserId').textContent = data.user_id;
+
+            const date = new Date(data.last_updated_timestamp * 1000);
+            document.getElementById('timestamp').textContent = date.toLocaleTimeString();
+        }
+
+        function showError(msg) {
+            const errorEl = document.getElementById('errorMsg');
+            errorEl.textContent = msg;
+            errorEl.style.display = 'block';
+        }
+
+        function toggleAutoFetch() {
+            const btn = document.getElementById('fetchBtn');
+            const input = document.getElementById('userIdInput');
+
+            if (isRunning) {
+                // Stop
+                clearInterval(fetchInterval);
+                fetchInterval = null;
+                btn.textContent = 'Start Live View';
+                btn.style.background = '#3b82f6';
+                input.disabled = false;
+                isRunning = false;
+            } else {
+                // Start
+                const userId = input.value.trim();
+                if (!userId) {
+                    showError('Please enter or select a User ID');
+                    return;
+                }
+
+                fetchData(); // Initial fetch
+                fetchInterval = setInterval(fetchData, 1000); // 1s polling
+                btn.textContent = 'Stop Live View';
+                btn.style.background = '#ef4444';
+                input.disabled = true;
+                isRunning = true;
+            }
+        }
+    </script>
+</body>
+
+</html>
