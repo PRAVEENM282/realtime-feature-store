@@ -1,10 +1,10 @@
 # Real-Time Feature Engineering Pipeline
 
-A production-grade, event-driven feature store built with **Kafka**, **Faust**, **PostgreSQL**, and **FastAPI**.
+A production-grade, event-driven feature store built with **Kafka**, **Faust**, **Redis**, **PostgreSQL**, and **FastAPI**.
 
 ## System Overview
 
-This system ingests high-frequency raw events, calculates stateful features in real-time (Rolling Windows & Counts), and persists them for sub-millisecond retrieval.
+This system ingests high-frequency raw events, calculates stateful features in real-time (Rolling Windows & Counts), and utilizes a **dual-storage strategy** to serve those features to machine learning models with sub-millisecond latency while maintaining strict historical consistency.
 
 ### Architecture
 
@@ -12,91 +12,204 @@ This system ingests high-frequency raw events, calculates stateful features in r
 graph TD
     data_gen[Data Generator] -->|Raw Events| kafka[Kafka Broker]
     kafka -->|Input Topic| faust[Faust Stream Processor]
-    faust -->|State Updates| rocks[RocksDB]
+    faust -->|Sub-ms Local State| rocks[RocksDB]
     faust -->|Processed Features| kafka
     kafka -->|Output Topic| db_writer[DB Writer Service]
-    db_writer -->|Upsert| postgres[(PostgreSQL)]
-    db_writer -->|Upsert| postgres[(PostgreSQL)]
-    api[FastAPI] -->|Select| postgres
-    user[User Browser] -->|HTTP| frontend[Frontend Dashboard]
-    frontend -->|REST| api
+    
+    %% Asynchronous Data Synchronization
+    db_writer -->|Async Set| redis[(Redis Cache)]
+    db_writer -->|Async Upsert| postgres[(PostgreSQL)]
+    
+    %% Cache-Aside Read Pattern
+    api[FastAPI Serving Layer] -->|1. Sub-ms Read| redis
+    api -.->|2. Fallback Query| postgres
+    
+    user[ML Inference / Client] -->|HTTP GET| api
 ```
 
-## Features
+---
 
-- **Real-Time Processing**: Faust agents process events with windowed aggregations.
-- **State Management**: RocksDB handles local state for high performance.
-- **Idempotent Writes**: Postgres Upserts ensure consistency.
-- **Event-Driven**: Fully asynchronous pipeline.
-- **Real-Time Dashboard**: Live visualization of feature updates.
-- **User Discovery**: Auto-detection of active users in the stream.
-- **Containerized**: All services are Dockerized.
+## Core Features
+
+* **Dual-Storage Serving Strategy**: Utilizes **Redis** as a high-speed, in-memory cache for sub-millisecond feature retrieval, alongside **PostgreSQL** as the durable system of record for historical consistency.
+
+* **Asynchronous Data Synchronisation**: The database writer consumes processed events from Kafka and concurrently updates both Redis and Postgres, ensuring zero-latency impact on the live inference read-path.
+
+* **Real-Time Stream Processing**: Faust agents process high-throughput events utilizing embedded RocksDB for ultra-fast, local windowed aggregations without network bottlenecking.
+
+* **Idempotent Architecture**: Guaranteed exactly-once processing semantics through Kafka offsets and PostgreSQL Upserts (`ON CONFLICT DO UPDATE`), preventing data corruption during worker crashes.
+
+* **Graceful Degradation**: The FastAPI serving layer implements a Cache-Aside pattern. If the Redis cluster experiences downtime, the API seamlessly falls back to querying PostgreSQL directly.
+
+* **Containerized Infrastructure**: Fully reproducible, locally testable environment using Docker Compose.
+
+---
 
 ## Setup & Running
 
 ### Prerequisites
-- Docker & Docker Compose
-- Ports 8000, 9092, 5432 available.
+
+* Docker & Docker Compose
+* Ports `8000` (API), `9092` (Kafka), `5432` (Postgres), and `6379` (Redis) must be available on your host machine.
 
 ### Quick Start
 
-1. **Configure Environment**:
-   ```bash
-   cp .env.example .env
-   ```
+#### 1. Configure Environment
 
-2. **Start Services**:
-   ```bash
-   docker-compose up --build -d
-   ```
+Clone the repository and set up your environment variables.
 
-3. **Verify Status**:
-   ```bash
-   docker-compose ps
-   ```
+```bash
+cp .env.example .env
+```
 
-4. **Watch Logs**:
-   ```bash
-   docker-compose logs -f faust_app
-   ```
+#### 2. Start the Cluster
+
+Spin up the entire event-driven architecture in the background.
+
+```bash
+docker compose up -d --build
+```
+
+#### 3. Verify Health
+
+Ensure all containers (`zookeeper`, `kafka`, `postgres`, `redis`, `db_writer`, `faust_app`, `fastapi_app`, `data_generator`) are running.
+
+```bash
+docker compose ps
+```
+
+---
 
 ## Validating the Pipeline
 
 ### 1. Check Data Generation
-The `data_generator` service should be sending 1000 events/sec. Check logs:
+
+The `data_generator` service pumps continuous simulated traffic into Kafka. You can watch the events being produced:
+
 ```bash
-docker-compose logs -f data_generator
+docker compose logs -f data_generator
 ```
 
-### 2. Query the API
-Fetch features for a user (replace UUID with one found in logs):
+### 2. Query the Feature Store API
+
+Fetch real-time features for a specific user. Look at the data generator logs to find an active `user_id`, then query the API. This endpoint will hit Redis for sub-millisecond retrieval.
+
 ```bash
 curl http://localhost:8000/features/<USER_ID>
 ```
-Response:
+
+### Example Response
+
 ```json
 {
-  "user_id": "...",
-  "feature_a": {"sum_10s": 123.45},
+  "user_id": "b13a9739-dd2a-4fd4-a1dc-8525073e9ff5",
+  "feature_a": {
+    "sum_10s": 123.45
+  },
   "feature_b": 5,
-  "last_updated_timestamp": "..."
+  "last_updated_timestamp": "2024-05-14T08:30:00.123456"
 }
 ```
 
+---
+
 ## Testing
 
-Run the full test suite (integration + unit) using the helper container:
+The project uses a containerized testing strategy to ensure tests run in an identical environment to production.
+
+### Run the Full Test Suite
+
+1. Ensure the main cluster is already running:
+
+```bash
+docker compose up -d
+```
+
+2. Run the test container:
+
 ```bash
 docker compose run --rm tests
 ```
-This handles all dependency installation and configuration automatically.
 
-## Debugging
+This executes both integration and unit tests inside an isolated container environment.
 
-- **Kafka Issues**: Use `docker-compose exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092` to check topics.
-- **DB Issues**: Connect via `docker-compose exec postgres psql -U admin -d feature_store`.
+---
+
+## Operational Debugging
+
+### Redis Monitoring
+
+Watch asynchronous synchronization and real-time cache updates:
+
+```bash
+docker compose exec redis redis-cli
+127.0.0.1:6379> MONITOR
+```
+
+### Kafka Topics
+
+Inspect the raw and processed Kafka streams:
+
+```bash
+docker compose exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092
+```
+
+### PostgreSQL Verification
+
+Verify persisted historical feature data:
+
+```bash
+docker compose exec postgres psql -U admin -d feature_store
+```
+
+---
 
 ## Performance Tuning
-- Adjust `EVENTS_PER_SECOND` in `.env`.
-- Tune `WINDOW_SIZE` in `services/faust_app/config.py`.
-- Scale workers in `docker-compose.yml` (requires partitioning strategy updates).
+
+### Throughput Scaling
+
+Adjust event generation rate in `.env`:
+
+```env
+EVENTS_PER_SECOND=1000
+```
+
+### Window Aggregation Tuning
+
+Modify aggregation window sizes in:
+
+```bash
+services/faust_app/config.py
+```
+
+### Horizontal Scaling
+
+Scale Faust workers in `docker-compose.yml`.
+
+> Note: Increasing worker count requires increasing Kafka topic partitions (`raw_events` and `processed_features`) to enable parallel stream consumption.
+
+---
+
+## Tech Stack
+
+| Component | Purpose |
+|---|---|
+| Kafka | Event Streaming Backbone |
+| Faust | Stateful Stream Processing |
+| RocksDB | Embedded Local State Store |
+| Redis | Low-Latency Feature Cache |
+| PostgreSQL | Durable Historical Storage |
+| FastAPI | Online Feature Serving API |
+| Docker Compose | Local Orchestration |
+
+---
+
+## Production Design Highlights
+
+* Event-driven asynchronous architecture
+* Sub-millisecond online feature serving
+* Stateful stream processing with RocksDB
+* Cache-aside resiliency pattern
+* Exactly-once/idempotent persistence
+* Horizontally scalable Kafka consumer topology
+* Fully containerized reproducible infrastructure
